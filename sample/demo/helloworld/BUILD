@@ -26,11 +26,16 @@ go_image(
 load("@k8s_object//:defaults.bzl", "k8s_object")
 
 k8s_object(
+    name = "elaservice",
+    template = ":elaservice.yaml",
+)
+
+k8s_object(
     name = "revisiontemplate",
     images = {
         "sample:latest": ":image",
     },
-    template = "//sample:revisiontemplate.yaml",
+    template = ":revisiontemplate.yaml",
 )
 
 load("@io_bazel_rules_k8s//k8s:objects.bzl", "k8s_objects")
@@ -38,7 +43,7 @@ load("@io_bazel_rules_k8s//k8s:objects.bzl", "k8s_objects")
 k8s_objects(
     name = "everything",
     objects = [
-        "//sample:service",
+        ":elaservice",
         ":revisiontemplate",
     ],
 )
