@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2018 Google, Inc. All rights reserved.
+# Copyright 2018 The Knative Authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,11 +39,14 @@ function cleanup() {
 function build_tests() {
   header "Running build tests"
   go build ./cmd/... ./sample/... ./pkg/...
+  # kubekins images don't have dep installed by default
+  go get -u github.com/golang/dep/cmd/dep
+  ./hack/verify-codegen.sh
 }
 
 function unit_tests() {
   header "Running unit tests"
-  go test ./...
+  report_go_test ./...
 }
 
 function integration_tests() {
