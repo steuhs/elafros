@@ -28,7 +28,18 @@ import (
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// Service
+// Service acts as a top-level container that manages a set of Routes and
+// Configurations which implement a network service. Service exists to provide a
+// singular abstraction which can be access controlled, reasoned about, and
+// which encapsulates software lifecycle decisions such as rollout policy and
+// team resource ownership. Service acts only as an orchestrator of the
+// underlying Routes and Configurations (much as a kubernetes Deployment
+// orchestrates ReplicaSets), and its usage is optional but recommended.
+//
+// The Service's controller will track the statuses of its owned Configuration
+// and Route, reflecting their statuses and conditions as its own.
+//
+// See also: https://github.com/knative/serving/blob/master/docs/spec/overview.md#service
 type Service struct {
 	metav1.TypeMeta `json:",inline"`
 	// +optional
@@ -39,8 +50,14 @@ type Service struct {
 	Status ServiceStatus `json:"status,omitempty"`
 }
 
-// ServiceSpec represents the configuration for the Service object.
-// Exactly one of its members (other than Generation) must be specified.
+// Check that Service may be validated and defaulted.
+var _ Validatable = (*Service)(nil)
+var _ Defaultable = (*Service)(nil)
+
+// ServiceSpec represents the configuration for the Service object. Exactly one
+// of its members (other than Generation) must be specified. Services can either
+// track the latest ready revision of a configuration or be pinned to a specific
+// revision.
 type ServiceSpec struct {
 	// TODO: Generation does not work correctly with CRD. They are scrubbed
 	// by the APIserver (https://github.com/kubernetes/kubernetes/issues/58778)
@@ -110,6 +127,39 @@ const (
 type ServiceStatus struct {
 	// +optional
 	Conditions []ServiceCondition `json:"conditions,omitempty"`
+
+	// From RouteStatus.
+	// Domain holds the top-level domain that will distribute traffic over the provided targets.
+	// It generally has the form {route-name}.{route-namespace}.{cluster-level-suffix}
+	// +optional
+	Domain string `json:"domain,omitempty"`
+
+	// From RouteStatus.
+	// DomainInternal holds the top-level domain that will distribute traffic over the provided
+	// targets from inside the cluster. It generally has the form
+	// {route-name}.{route-namespace}.svc.cluster.local
+	// +optional
+	DomainInternal string `json:"domainInternal,omitempty"`
+
+	// From RouteStatus.
+	// Traffic holds the configured traffic distribution.
+	// These entries will always contain RevisionName references.
+	// When ConfigurationName appears in the spec, this will hold the
+	// LatestReadyRevisionName that we last observed.
+	// +optional
+	Traffic []TrafficTarget `json:"traffic,omitempty"`
+
+	// From ConfigurationStatus.
+	// LatestReadyRevisionName holds the name of the latest Revision stamped out
+	// from this Service's Configuration that has had its "Ready" condition become "True".
+	// +optional
+	LatestReadyRevisionName string `json:"latestReadyRevisionName,omitempty"`
+
+	// From ConfigurationStatus.
+	// LatestCreatedRevisionName is the last revision that was created from this Service's
+	// Configuration. It might not be ready yet, for that use LatestReadyRevisionName.
+	// +optional
+	LatestCreatedRevisionName string `json:"latestCreatedRevisionName,omitempty"`
 
 	// ObservedGeneration is the 'Generation' of the Service that
 	// was last processed by the controller.
@@ -204,6 +254,9 @@ func (ss *ServiceStatus) InitializeConditions() {
 }
 
 func (ss *ServiceStatus) PropagateConfigurationStatus(cs ConfigurationStatus) {
+	ss.LatestReadyRevisionName = cs.LatestReadyRevisionName
+	ss.LatestCreatedRevisionName = cs.LatestCreatedRevisionName
+
 	cc := cs.GetCondition(ConfigurationConditionReady)
 	if cc == nil {
 		return
@@ -227,6 +280,10 @@ func (ss *ServiceStatus) PropagateConfigurationStatus(cs ConfigurationStatus) {
 }
 
 func (ss *ServiceStatus) PropagateRouteStatus(rs RouteStatus) {
+	ss.Domain = rs.Domain
+	ss.DomainInternal = rs.DomainInternal
+	ss.Traffic = rs.Traffic
+
 	rc := rs.GetCondition(RouteConditionReady)
 	if rc == nil {
 		return

@@ -1,5 +1,6 @@
 /*
 Copyright 2017 The Knative Authors
+
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
@@ -28,7 +29,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/knative/serving/pkg"
+	"github.com/knative/serving/pkg/system"
 
 	"github.com/knative/serving/pkg/logging/logkey"
 
@@ -56,10 +57,13 @@ const (
 	secretServerCert  = "server-cert.pem"
 	secretCACert      = "ca-cert.pem"
 	// TODO: Could these come from somewhere else.
-	elaWebhookDeployment = "webhook"
+	servingWebhookDeployment = "webhook"
 )
 
-var deploymentKind = v1beta1.SchemeGroupVersion.WithKind("Deployment")
+var (
+	deploymentKind      = v1beta1.SchemeGroupVersion.WithKind("Deployment")
+	errMissingNewObject = errors.New("the new object may not be nil")
+)
 
 // ControllerOptions contains the configuration for the webhook
 type ControllerOptions struct {
@@ -121,6 +125,9 @@ type AdmissionController struct {
 // GenericCRD is the interface definition that allows us to perform the generic
 // CRD actions like deciding whether to increment generation and so forth.
 type GenericCRD interface {
+	v1alpha1.Defaultable
+	v1alpha1.Validatable
+
 	// GetObjectMeta return the object metadata
 	GetObjectMeta() metav1.Object
 	// GetGeneration returns the current Generation of the object
@@ -214,26 +221,72 @@ func NewAdmissionController(client kubernetes.Interface, options ControllerOptio
 		handlers: map[string]GenericCRDHandler{
 			"Revision": {
 				Factory:   &v1alpha1.Revision{},
-				Defaulter: SetRevisionDefaults(ctx),
-				Validator: ValidateRevision(ctx),
+				Defaulter: SetDefaults(ctx),
+				Validator: Validate(ctx),
 			},
 			"Configuration": {
 				Factory:   &v1alpha1.Configuration{},
-				Defaulter: SetConfigurationDefaults(ctx),
-				Validator: ValidateConfiguration(ctx),
+				Defaulter: SetDefaults(ctx),
+				Validator: Validate(ctx),
 			},
 			"Route": {
 				Factory:   &v1alpha1.Route{},
-				Validator: ValidateRoute(ctx),
+				Defaulter: SetDefaults(ctx),
+				Validator: Validate(ctx),
 			},
 			"Service": {
 				Factory:   &v1alpha1.Service{},
-				Defaulter: SetServiceDefaults(ctx),
-				Validator: ValidateService(ctx),
+				Defaulter: SetDefaults(ctx),
+				Validator: Validate(ctx),
 			},
 		},
 		logger: logger,
 	}, nil
+}
+
+// Validate checks whether "new" and "old" implement HasImmutableFields and checks them,
+// it then delegates validation to v1alpha1.Validatable on "new".
+func Validate(ctx context.Context) ResourceCallback {
+	return func(patches *[]jsonpatch.JsonPatchOperation, old GenericCRD, new GenericCRD) error {
+		if hifNew, ok := new.(v1alpha1.HasImmutableFields); ok && old != nil {
+			hifOld, ok := old.(v1alpha1.HasImmutableFields)
+			if !ok {
+				return fmt.Errorf("unexpected type mismatch %T vs. %T", old, new)
+			}
+			if err := hifNew.CheckImmutableFields(hifOld); err != nil {
+				return err
+			}
+		}
+		// Can't just `return new.Validate()` because it doesn't properly nil-check.
+		if err := new.Validate(); err != nil {
+			return err
+		}
+		return nil
+	}
+}
+
+// SetDefaults simply leverages v1alpha1.Defaultable to set defaults.
+func SetDefaults(ctx context.Context) ResourceDefaulter {
+	return func(patches *[]jsonpatch.JsonPatchOperation, crd GenericCRD) error {
+		rawOriginal, err := json.Marshal(crd)
+		if err != nil {
+			return err
+		}
+		crd.SetDefaults()
+
+		// Marshal the before and after.
+		rawAfter, err := json.Marshal(crd)
+		if err != nil {
+			return err
+		}
+
+		patch, err := jsonpatch.CreatePatch(rawOriginal, rawAfter)
+		if err != nil {
+			return err
+		}
+		*patches = append(*patches, patch...)
+		return nil
+	}
 }
 
 func configureCerts(ctx context.Context, client kubernetes.Interface, options *ControllerOptions) (*tls.Config, []byte, error) {
@@ -345,7 +398,7 @@ func (ac *AdmissionController) register(
 	}
 
 	// Set the owner to our deployment
-	deployment, err := ac.client.ExtensionsV1beta1().Deployments(pkg.GetServingSystemNamespace()).Get(elaWebhookDeployment, metav1.GetOptions{})
+	deployment, err := ac.client.ExtensionsV1beta1().Deployments(system.Namespace).Get(servingWebhookDeployment, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("Failed to fetch our deployment: %s", err)
 	}
@@ -380,7 +433,7 @@ func (ac *AdmissionController) register(
 }
 
 // ServeHTTP implements the external admission webhook for mutating
-// ela resources.
+// serving resources.
 func (ac *AdmissionController) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logger := ac.logger
 	logger.Infof("Webhook ServeHTTP request=%#v", r)
@@ -506,6 +559,10 @@ func (ac *AdmissionController) mutate(ctx context.Context, kind string, oldBytes
 		}
 	}
 
+	// None of the validators will accept a nil value for newObj.
+	if newObj == nil {
+		return nil, errMissingNewObject
+	}
 	if err := handler.Validator(&patches, oldObj, newObj); err != nil {
 		logger.Error("Failed the resource specific validation", zap.Error(err))
 		// Return the error message as-is to give the validation callback

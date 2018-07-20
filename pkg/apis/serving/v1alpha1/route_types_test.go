@@ -1,9 +1,12 @@
 /*
-Copyright 2018 The Knative Authors.
+Copyright 2018 The Knative Authors
+
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
+
     http://www.apache.org/licenses/LICENSE-2.0
+
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -43,7 +46,7 @@ func TestRouteIsReady(t *testing.T) {
 		name: "Different condition type should not be ready",
 		status: RouteStatus{
 			Conditions: []RouteCondition{{
-				Type:   RouteConditionIngressReady,
+				Type:   RouteConditionAllTrafficAssigned,
 				Status: corev1.ConditionTrue,
 			}},
 		},
@@ -87,7 +90,7 @@ func TestRouteIsReady(t *testing.T) {
 		name: "Multiple conditions with ready status should be ready",
 		status: RouteStatus{
 			Conditions: []RouteCondition{{
-				Type:   RouteConditionIngressReady,
+				Type:   RouteConditionAllTrafficAssigned,
 				Status: corev1.ConditionTrue,
 			}, {
 				Type:   RouteConditionReady,
@@ -99,7 +102,7 @@ func TestRouteIsReady(t *testing.T) {
 		name: "Multiple conditions with ready status false should not be ready",
 		status: RouteStatus{
 			Conditions: []RouteCondition{{
-				Type:   RouteConditionIngressReady,
+				Type:   RouteConditionAllTrafficAssigned,
 				Status: corev1.ConditionTrue,
 			}, {
 				Type:   RouteConditionReady,
@@ -172,44 +175,18 @@ func TestRouteConditions(t *testing.T) {
 	}
 }
 
-func TestTypicalFlowIngressFirst(t *testing.T) {
+func TestTypicalRouteFlow(t *testing.T) {
 	r := &Route{}
 	r.Status.InitializeConditions()
-	checkConditionOngoingRoute(r.Status, RouteConditionIngressReady, t)
-	checkConditionOngoingRoute(r.Status, RouteConditionAllTrafficAssigned, t)
-	checkConditionOngoingRoute(r.Status, RouteConditionReady, t)
-
-	r.Status.MarkIngressReady()
-	checkConditionSucceededRoute(r.Status, RouteConditionIngressReady, t)
 	checkConditionOngoingRoute(r.Status, RouteConditionAllTrafficAssigned, t)
 	checkConditionOngoingRoute(r.Status, RouteConditionReady, t)
 
 	r.Status.MarkTrafficAssigned()
-	checkConditionSucceededRoute(r.Status, RouteConditionIngressReady, t)
 	checkConditionSucceededRoute(r.Status, RouteConditionAllTrafficAssigned, t)
 	checkConditionSucceededRoute(r.Status, RouteConditionReady, t)
 
 	// Verify that this doesn't reset our conditions.
 	r.Status.InitializeConditions()
-	checkConditionSucceededRoute(r.Status, RouteConditionIngressReady, t)
-	checkConditionSucceededRoute(r.Status, RouteConditionAllTrafficAssigned, t)
-	checkConditionSucceededRoute(r.Status, RouteConditionReady, t)
-}
-
-func TestTypicalFlowIngressLast(t *testing.T) {
-	r := &Route{}
-	r.Status.InitializeConditions()
-	checkConditionOngoingRoute(r.Status, RouteConditionIngressReady, t)
-	checkConditionOngoingRoute(r.Status, RouteConditionAllTrafficAssigned, t)
-	checkConditionOngoingRoute(r.Status, RouteConditionReady, t)
-
-	r.Status.MarkTrafficAssigned()
-	checkConditionOngoingRoute(r.Status, RouteConditionIngressReady, t)
-	checkConditionSucceededRoute(r.Status, RouteConditionAllTrafficAssigned, t)
-	checkConditionOngoingRoute(r.Status, RouteConditionReady, t)
-
-	r.Status.MarkIngressReady()
-	checkConditionSucceededRoute(r.Status, RouteConditionIngressReady, t)
 	checkConditionSucceededRoute(r.Status, RouteConditionAllTrafficAssigned, t)
 	checkConditionSucceededRoute(r.Status, RouteConditionReady, t)
 }
@@ -217,17 +194,65 @@ func TestTypicalFlowIngressLast(t *testing.T) {
 func TestTrafficNotAssignedFlow(t *testing.T) {
 	r := &Route{}
 	r.Status.InitializeConditions()
-	checkConditionOngoingRoute(r.Status, RouteConditionIngressReady, t)
 	checkConditionOngoingRoute(r.Status, RouteConditionAllTrafficAssigned, t)
 	checkConditionOngoingRoute(r.Status, RouteConditionReady, t)
 
-	r.Status.MarkTrafficNotAssigned("Revision", "does-not-exist")
-	checkConditionOngoingRoute(r.Status, RouteConditionIngressReady, t)
+	r.Status.MarkMissingTrafficTarget("Revision", "does-not-exist")
 	checkConditionFailedRoute(r.Status, RouteConditionAllTrafficAssigned, t)
 	checkConditionFailedRoute(r.Status, RouteConditionReady, t)
+}
 
-	r.Status.MarkIngressReady()
-	checkConditionSucceededRoute(r.Status, RouteConditionIngressReady, t)
+func TestTargetConfigurationNotYetReadyFlow(t *testing.T) {
+	r := &Route{}
+	r.Status.InitializeConditions()
+	checkConditionOngoingRoute(r.Status, RouteConditionAllTrafficAssigned, t)
+	checkConditionOngoingRoute(r.Status, RouteConditionReady, t)
+
+	r.Status.MarkConfigurationNotReady("i-have-no-ready-revision")
+	checkConditionOngoingRoute(r.Status, RouteConditionAllTrafficAssigned, t)
+	checkConditionOngoingRoute(r.Status, RouteConditionReady, t)
+}
+
+func TestUnknownErrorWhenConfiguringTraffic(t *testing.T) {
+	r := &Route{}
+	r.Status.InitializeConditions()
+	checkConditionOngoingRoute(r.Status, RouteConditionAllTrafficAssigned, t)
+	checkConditionOngoingRoute(r.Status, RouteConditionReady, t)
+
+	r.Status.MarkUnknownTrafficError("unknown-error")
+	checkConditionOngoingRoute(r.Status, RouteConditionAllTrafficAssigned, t)
+	checkConditionOngoingRoute(r.Status, RouteConditionReady, t)
+}
+
+func TestTargetConfigurationFailedToBeReadyFlow(t *testing.T) {
+	r := &Route{}
+	r.Status.InitializeConditions()
+	checkConditionOngoingRoute(r.Status, RouteConditionAllTrafficAssigned, t)
+	checkConditionOngoingRoute(r.Status, RouteConditionReady, t)
+
+	r.Status.MarkConfigurationFailed("permanently-failed")
+	checkConditionFailedRoute(r.Status, RouteConditionAllTrafficAssigned, t)
+	checkConditionFailedRoute(r.Status, RouteConditionReady, t)
+}
+
+func TestTargetRevisionNotYetReadyFlow(t *testing.T) {
+	r := &Route{}
+	r.Status.InitializeConditions()
+	checkConditionOngoingRoute(r.Status, RouteConditionAllTrafficAssigned, t)
+	checkConditionOngoingRoute(r.Status, RouteConditionReady, t)
+
+	r.Status.MarkRevisionNotReady("not-yet-ready")
+	checkConditionOngoingRoute(r.Status, RouteConditionAllTrafficAssigned, t)
+	checkConditionOngoingRoute(r.Status, RouteConditionReady, t)
+}
+
+func TestTargetRevisionFailedToBeReadyFlow(t *testing.T) {
+	r := &Route{}
+	r.Status.InitializeConditions()
+	checkConditionOngoingRoute(r.Status, RouteConditionAllTrafficAssigned, t)
+	checkConditionOngoingRoute(r.Status, RouteConditionReady, t)
+
+	r.Status.MarkRevisionFailed("cannot-find-image")
 	checkConditionFailedRoute(r.Status, RouteConditionAllTrafficAssigned, t)
 	checkConditionFailedRoute(r.Status, RouteConditionReady, t)
 }

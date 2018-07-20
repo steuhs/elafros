@@ -22,7 +22,7 @@ import (
 
 	"github.com/knative/serving/pkg/apis/serving/v1alpha1"
 	clientset "github.com/knative/serving/pkg/client/clientset/versioned"
-	"github.com/knative/serving/pkg/controller"
+	revisionresourcenames "github.com/knative/serving/pkg/controller/revision/resources/names"
 	"github.com/knative/serving/pkg/logging/logkey"
 	"go.uber.org/zap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,11 +41,11 @@ type revisionActivator struct {
 // NewRevisionActivator creates an Activator that changes revision
 // serving status to active if necessary, then returns the endpoint
 // once the revision is ready to serve traffic.
-func NewRevisionActivator(kubeClient kubernetes.Interface, elaClient clientset.Interface, logger *zap.SugaredLogger) Activator {
+func NewRevisionActivator(kubeClient kubernetes.Interface, servingClient clientset.Interface, logger *zap.SugaredLogger) Activator {
 	return &revisionActivator{
 		readyTimout: 60 * time.Second,
 		kubeClient:  kubeClient,
-		knaClient:   elaClient,
+		knaClient:   servingClient,
 		logger:      logger,
 	}
 }
@@ -118,7 +118,7 @@ func (r *revisionActivator) ActiveEndpoint(namespace, name string) (end Endpoint
 
 	// Get the revision endpoint
 	services := r.kubeClient.CoreV1().Services(revision.GetNamespace())
-	serviceName := controller.GetServingK8SServiceNameForRevision(revision)
+	serviceName := revisionresourcenames.K8sService(revision)
 	svc, err := services.Get(serviceName, metav1.GetOptions{})
 	if err != nil {
 		return internalError("Unable to get service %s for revision: %v",
@@ -126,7 +126,7 @@ func (r *revisionActivator) ActiveEndpoint(namespace, name string) (end Endpoint
 	}
 
 	// TODO: in the future, the target service could have more than one port.
-	// https://github.com/elafros/elafros/issues/837
+	// https://github.com/knative/serving/issues/837
 	if len(svc.Spec.Ports) != 1 {
 		return internalError("Revision needs one port. Found %v", len(svc.Spec.Ports))
 	}

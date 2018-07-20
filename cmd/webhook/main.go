@@ -1,5 +1,6 @@
 /*
 Copyright 2017 The Knative Authors
+
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
@@ -17,12 +18,14 @@ package main
 
 import (
 	"flag"
+	"log"
 
 	"go.uber.org/zap"
 
-	"github.com/knative/serving/pkg"
+	"github.com/knative/serving/pkg/configmap"
 	"github.com/knative/serving/pkg/logging"
 	"github.com/knative/serving/pkg/signals"
+	"github.com/knative/serving/pkg/system"
 	"github.com/knative/serving/pkg/webhook"
 
 	"k8s.io/client-go/kubernetes"
@@ -31,7 +34,15 @@ import (
 
 func main() {
 	flag.Parse()
-	logger := logging.NewLoggerFromDefaultConfigMap("loglevel.webhook").Named("webhook")
+	cm, err := configmap.Load("/etc/config-logging")
+	if err != nil {
+		log.Fatalf("Error loading logging configuration: %v", err)
+	}
+	config, err := logging.NewConfigFromMap(cm)
+	if err != nil {
+		log.Fatalf("Error parsing logging configuration: %v", err)
+	}
+	logger, _ := logging.NewLoggerFromConfig(config, "webhook")
 	defer logger.Sync()
 
 	logger.Info("Starting the Configuration Webhook")
@@ -51,7 +62,7 @@ func main() {
 
 	options := webhook.ControllerOptions{
 		ServiceName:      "webhook",
-		ServiceNamespace: pkg.GetServingSystemNamespace(),
+		ServiceNamespace: system.Namespace,
 		Port:             443,
 		SecretName:       "webhook-certs",
 		WebhookName:      "webhook.knative.dev",

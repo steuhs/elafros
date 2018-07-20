@@ -18,14 +18,20 @@ package main
 
 import (
 	"flag"
+	"log"
 	"time"
 
-	"github.com/knative/serving/pkg"
+	"github.com/knative/serving/pkg/configmap"
+	"go.uber.org/zap"
 
-	"github.com/josephburnett/k8sflag/pkg/k8sflag"
 	"github.com/knative/serving/pkg/controller"
 	"github.com/knative/serving/pkg/logging"
 
+	"github.com/knative/serving/pkg/system"
+	corev1 "k8s.io/api/core/v1"
+
+	vpa "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/clientset/versioned"
+	vpainformers "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/informers/externalversions"
 	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
@@ -42,8 +48,6 @@ import (
 	"github.com/knative/serving/pkg/controller/route"
 	"github.com/knative/serving/pkg/controller/service"
 	"github.com/knative/serving/pkg/signals"
-	vpa "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/clientset/versioned"
-	vpainformers "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/client/informers/externalversions"
 )
 
 const (
@@ -51,57 +55,23 @@ const (
 )
 
 var (
-	masterURL         string
-	kubeconfig        string
-	queueSidecarImage string
-	autoscalerImage   string
-
-	autoscaleFlagSet                      = k8sflag.NewFlagSet("/etc/config-autoscaler")
-	autoscaleConcurrencyQuantumOfTime     = autoscaleFlagSet.Duration("concurrency-quantum-of-time", nil, k8sflag.Required)
-	autoscaleEnableScaleToZero            = autoscaleFlagSet.Bool("enable-scale-to-zero", false)
-	autoscaleEnableSingleConcurrency      = autoscaleFlagSet.Bool("enable-single-concurrency", false)
-	autoscaleEnableVerticalPodAutoscaling = autoscaleFlagSet.Bool("enable-vertical-pod-autoscaling", false)
-
-	observabilityFlagSet             = k8sflag.NewFlagSet("/etc/config-observability")
-	loggingEnableVarLogCollection    = observabilityFlagSet.Bool("logging.enable-var-log-collection", false)
-	loggingFluentSidecarImage        = observabilityFlagSet.String("logging.fluentd-sidecar-image", "")
-	loggingFluentSidecarOutputConfig = observabilityFlagSet.String("logging.fluentd-sidecar-output-config", "")
-	loggingURLTemplate               = observabilityFlagSet.String("logging.revision-url-template", "")
-
-	loggingFlagSet         = k8sflag.NewFlagSet("/etc/config-logging")
-	zapConfig              = loggingFlagSet.String("zap-logger-config", "")
-	queueProxyLoggingLevel = loggingFlagSet.String("loglevel.queueproxy", "")
+	masterURL  string
+	kubeconfig string
 )
 
 func main() {
 	flag.Parse()
-	logger := logging.NewLoggerFromDefaultConfigMap("loglevel.controller").Named("controller")
+	loggingConfigMap, err := configmap.Load("/etc/config-logging")
+	if err != nil {
+		log.Fatalf("Error loading logging configuration: %v", err)
+	}
+	loggingConfig, err := logging.NewConfigFromMap(loggingConfigMap)
+	if err != nil {
+		log.Fatalf("Error parsing logging configuration: %v", err)
+	}
+	logger, atomicLevel := logging.NewLoggerFromConfig(loggingConfig, "controller")
 	defer logger.Sync()
 
-	if loggingEnableVarLogCollection.Get() {
-		if len(loggingFluentSidecarImage.Get()) != 0 {
-			logger.Infof("Using fluentd sidecar image: %s", loggingFluentSidecarImage)
-		} else {
-			logger.Fatal("missing required flag: -fluentdSidecarImage")
-		}
-		logger.Infof("Using fluentd sidecar output config: %s", loggingFluentSidecarOutputConfig)
-	}
-
-	if loggingURLTemplate.Get() != "" {
-		logger.Infof("Using logging url template: %s", loggingURLTemplate)
-	}
-
-	if len(queueSidecarImage) != 0 {
-		logger.Infof("Using queue sidecar image: %s", queueSidecarImage)
-	} else {
-		logger.Fatal("missing required flag: -queueSidecarImage")
-	}
-
-	if len(autoscalerImage) != 0 {
-		logger.Infof("Using autoscaler image: %s", autoscalerImage)
-	} else {
-		logger.Fatal("missing required flag: -autoscalerImage")
-	}
 	// set up signals so we handle the first shutdown signal gracefully
 	stopCh := signals.SetupSignalHandler()
 
@@ -115,9 +85,9 @@ func main() {
 		logger.Fatalf("Error building kubernetes clientset: %v", err)
 	}
 
-	elaClient, err := clientset.NewForConfig(cfg)
+	servingClient, err := clientset.NewForConfig(cfg)
 	if err != nil {
-		logger.Fatalf("Error building ela clientset: %v", err)
+		logger.Fatalf("Error building serving clientset: %v", err)
 	}
 
 	buildClient, err := buildclientset.NewForConfig(cfg)
@@ -130,62 +100,81 @@ func main() {
 	}
 
 	kubeInformerFactory := kubeinformers.NewSharedInformerFactory(kubeClient, time.Second*30)
-	elaInformerFactory := informers.NewSharedInformerFactory(elaClient, time.Second*30)
+	servingInformerFactory := informers.NewSharedInformerFactory(servingClient, time.Second*30)
 	buildInformerFactory := buildinformers.NewSharedInformerFactory(buildClient, time.Second*30)
 	servingSystemInformerFactory := kubeinformers.NewFilteredSharedInformerFactory(kubeClient,
-		time.Minute*5, pkg.GetServingSystemNamespace(), nil)
+		time.Minute*5, system.Namespace, nil)
 	vpaInformerFactory := vpainformers.NewSharedInformerFactory(vpaClient, time.Second*30)
 
-	revControllerConfig := revision.ControllerConfig{
-		AutoscaleConcurrencyQuantumOfTime:     autoscaleConcurrencyQuantumOfTime,
-		AutoscaleEnableSingleConcurrency:      autoscaleEnableSingleConcurrency,
-		AutoscaleEnableVerticalPodAutoscaling: autoscaleEnableVerticalPodAutoscaling,
-		AutoscalerImage:                       autoscalerImage,
-		QueueSidecarImage:                     queueSidecarImage,
-
-		EnableVarLogCollection:     loggingEnableVarLogCollection.Get(),
-		FluentdSidecarImage:        loggingFluentSidecarImage.Get(),
-		FluentdSidecarOutputConfig: loggingFluentSidecarOutputConfig.Get(),
-		LoggingURLTemplate:         loggingURLTemplate.Get(),
-
-		QueueProxyLoggingConfig: zapConfig.Get(),
-		QueueProxyLoggingLevel:  queueProxyLoggingLevel.Get(),
-	}
+	configMapWatcher := configmap.NewDefaultWatcher(kubeClient, system.Namespace)
 
 	opt := controller.Options{
 		KubeClientSet:    kubeClient,
-		ServingClientSet: elaClient,
+		ServingClientSet: servingClient,
 		BuildClientSet:   buildClient,
+		ConfigMapWatcher: configMapWatcher,
 		Logger:           logger,
 	}
 
-	serviceInformer := elaInformerFactory.Serving().V1alpha1().Services()
-	routeInformer := elaInformerFactory.Serving().V1alpha1().Routes()
-	configurationInformer := elaInformerFactory.Serving().V1alpha1().Configurations()
-	revisionInformer := elaInformerFactory.Serving().V1alpha1().Revisions()
+	serviceInformer := servingInformerFactory.Serving().V1alpha1().Services()
+	routeInformer := servingInformerFactory.Serving().V1alpha1().Routes()
+	configurationInformer := servingInformerFactory.Serving().V1alpha1().Configurations()
+	revisionInformer := servingInformerFactory.Serving().V1alpha1().Revisions()
 	buildInformer := buildInformerFactory.Build().V1alpha1().Builds()
-	configMapInformer := servingSystemInformerFactory.Core().V1().ConfigMaps()
 	deploymentInformer := kubeInformerFactory.Apps().V1().Deployments()
+	coreServiceInformer := kubeInformerFactory.Core().V1().Services()
 	endpointsInformer := kubeInformerFactory.Core().V1().Endpoints()
-	ingressInformer := kubeInformerFactory.Extensions().V1beta1().Ingresses()
+	configMapInformer := kubeInformerFactory.Core().V1().ConfigMaps()
+	virtualServiceInformer := servingInformerFactory.Networking().V1alpha3().VirtualServices()
 	vpaInformer := vpaInformerFactory.Poc().V1alpha1().VerticalPodAutoscalers()
 
 	// Build all of our controllers, with the clients constructed above.
 	// Add new controllers to this array.
 	controllers := []controller.Interface{
-		configuration.NewController(opt, configurationInformer, revisionInformer, cfg),
-		revision.NewController(opt, vpaClient, revisionInformer, buildInformer, configMapInformer,
-			deploymentInformer, endpointsInformer, vpaInformer, cfg, &revControllerConfig),
-		route.NewController(opt, routeInformer, configurationInformer, ingressInformer,
-			configMapInformer, cfg, autoscaleEnableScaleToZero),
-		service.NewController(opt, serviceInformer, configurationInformer, routeInformer, cfg),
+		configuration.NewController(
+			opt,
+			configurationInformer,
+			revisionInformer,
+		),
+		revision.NewController(
+			opt,
+			vpaClient,
+			revisionInformer,
+			buildInformer,
+			deploymentInformer,
+			coreServiceInformer,
+			endpointsInformer,
+			configMapInformer,
+			vpaInformer,
+		),
+		route.NewController(
+			opt,
+			routeInformer,
+			configurationInformer,
+			revisionInformer,
+			coreServiceInformer,
+			virtualServiceInformer,
+		),
+		service.NewController(
+			opt,
+			serviceInformer,
+			configurationInformer,
+			routeInformer,
+		),
 	}
 
-	go kubeInformerFactory.Start(stopCh)
-	go elaInformerFactory.Start(stopCh)
-	go buildInformerFactory.Start(stopCh)
-	go servingSystemInformerFactory.Start(stopCh)
-	go vpaInformerFactory.Start(stopCh)
+	// Watch the logging config map and dynamically update logging levels.
+	configMapWatcher.Watch(logging.ConfigName, receiveLoggingConfig(logger, atomicLevel))
+
+	// These are non-blocking.
+	kubeInformerFactory.Start(stopCh)
+	servingInformerFactory.Start(stopCh)
+	buildInformerFactory.Start(stopCh)
+	servingSystemInformerFactory.Start(stopCh)
+	vpaInformerFactory.Start(stopCh)
+	if err := configMapWatcher.Start(stopCh); err != nil {
+		logger.Fatalf("failed to start configuration manager: %v", err)
+	}
 
 	// Wait for the caches to be synced before starting controllers.
 	logger.Info("Waiting for informer caches to sync")
@@ -195,10 +184,11 @@ func main() {
 		configurationInformer.Informer().HasSynced,
 		revisionInformer.Informer().HasSynced,
 		buildInformer.Informer().HasSynced,
-		configMapInformer.Informer().HasSynced,
 		deploymentInformer.Informer().HasSynced,
+		coreServiceInformer.Informer().HasSynced,
 		endpointsInformer.Informer().HasSynced,
-		ingressInformer.Informer().HasSynced,
+		configMapInformer.Informer().HasSynced,
+		virtualServiceInformer.Informer().HasSynced,
 	} {
 		if ok := cache.WaitForCacheSync(stopCh, synced); !ok {
 			logger.Fatalf("failed to wait for cache at index %v to sync", i)
@@ -222,6 +212,21 @@ func main() {
 func init() {
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	flag.StringVar(&masterURL, "master", "", "The address of the Kubernetes API server. Overrides any value in kubeconfig. Only required if out-of-cluster.")
-	flag.StringVar(&queueSidecarImage, "queueSidecarImage", "", "The digest of the queue sidecar image.")
-	flag.StringVar(&autoscalerImage, "autoscalerImage", "", "The digest of the autoscaler image.")
+}
+
+func receiveLoggingConfig(logger *zap.SugaredLogger, atomicLevel zap.AtomicLevel) func(configMap *corev1.ConfigMap) {
+	return func(configMap *corev1.ConfigMap) {
+		loggingConfig, err := logging.NewConfigFromConfigMap(configMap)
+		if err != nil {
+			logger.Error("Failed to parse the logging configmap. Previous config map will be used.", zap.Error(err))
+			return
+		}
+
+		if level, ok := loggingConfig.LoggingLevel["controller"]; ok {
+			if atomicLevel.Level() != level {
+				logger.Infof("Updating logging level from %v to %v.", atomicLevel.Level(), level)
+				atomicLevel.SetLevel(level)
+			}
+		}
+	}
 }
