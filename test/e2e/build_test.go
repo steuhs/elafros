@@ -18,6 +18,7 @@ limitations under the License.
 package e2e
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 
@@ -32,7 +33,7 @@ func TestBuildAndServe(t *testing.T) {
 	clients := Setup(t)
 
 	// Add test case specific name to its own logger.
-	logger := test.Logger.Named("TestBuildAndServe")
+	logger := test.GetContextLogger("TestBuildAndServe")
 
 	imagePath := strings.Join([]string{test.Flags.DockerRepo, "helloworld"}, "/")
 
@@ -70,7 +71,8 @@ func TestBuildAndServe(t *testing.T) {
 	}
 	domain := route.Status.Domain
 
-	if err := test.WaitForEndpointState(clients.Kube, logger, test.Flags.ResolvableDomain, domain, test.MatchesBody(helloWorldExpectedOutput), "HelloWorldServesText"); err != nil {
+	endState := test.Retrying(test.MatchesBody(helloWorldExpectedOutput), http.StatusNotFound)
+	if err := test.WaitForEndpointState(clients.Kube, logger, domain, endState, "HelloWorldServesText"); err != nil {
 		t.Fatalf("The endpoint for Route %s at domain %s didn't serve the expected text \"%s\": %v", names.Route, domain, helloWorldExpectedOutput, err)
 	}
 
@@ -102,7 +104,7 @@ func TestBuildFailure(t *testing.T) {
 	clients := Setup(t)
 
 	// Add test case specific name to its own logger.
-	logger := test.Logger.Named("TestBuildFailure")
+	logger := test.GetContextLogger("TestBuildFailure")
 
 	logger.Infof("Creating a new Configuration with failing build")
 	names := test.ResourceNames{
