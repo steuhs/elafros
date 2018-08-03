@@ -1,23 +1,5 @@
-# Gopkg.toml example
-#
 # Refer to https://github.com/golang/dep/blob/master/docs/Gopkg.toml.md
 # for detailed Gopkg.toml documentation.
-#
-# required = ["github.com/user/thing/cmd/thing"]
-# ignored = ["github.com/user/project/pkgX", "bitbucket.org/user/project/pkgA/pkgY"]
-#
-# [[constraint]]
-#   name = "github.com/user/project"
-#   version = "1.0.0"
-#
-# [[constraint]]
-#   name = "github.com/user/project2"
-#   branch = "dev"
-#   source = "github.com/myfork/project2"
-#
-# [[override]]
-#  name = "github.com/x/y"
-#  version = "2.4.0"
 
 required = [
   "k8s.io/apimachinery/pkg/util/sets/types",
@@ -27,11 +9,6 @@ required = [
   "k8s.io/code-generator/cmd/client-gen",
   "k8s.io/code-generator/cmd/lister-gen",
   "k8s.io/code-generator/cmd/informer-gen",
-  "github.com/google/go-containerregistry/cmd/ko",
-]
-
-ignored = [
-  "github.com/knative/serving/sample/grpc-ping*",
 ]
 
 
@@ -56,6 +33,11 @@ ignored = [
   name = "github.com/knative/build"
   # HEAD as of 2018-06-29
   revision = "5c1d8c8469d1ed34b2aecf4c2305b3a57fff2ee3"
+
+[[constraint]]
+  name = "github.com/knative/pkg"
+  # HEAD as of 2018-08-02
+  revision = "51828370417a6cce0cf7b271a5ee49bf3b01734c"
 
 [[constraint]]
   name = "github.com/google/go-containerregistry"

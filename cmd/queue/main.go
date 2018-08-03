@@ -33,6 +33,7 @@ import (
 	"syscall"
 	"time"
 
+	commonlogkey "github.com/knative/pkg/logging/logkey"
 	"github.com/knative/serving/cmd/util"
 	"github.com/knative/serving/pkg/apis/serving/v1alpha1"
 	"github.com/knative/serving/pkg/autoscaler"
@@ -68,12 +69,11 @@ const (
 )
 
 var (
-	podName              string
-	servingNamespace     string
-	servingConfiguration string
-	// servingRevision is the revision name prepended with its namespace, e.g.
-	// namespace/name.
+	podName               string
+	servingNamespace      string
+	servingConfiguration  string
 	servingRevision       string
+	servingRevisionKey    string
 	servingAutoscaler     string
 	servingAutoscalerPort string
 	statChan              = make(chan *autoscaler.Stat, statReportingQueueLength)
@@ -97,6 +97,7 @@ func initEnv() {
 	servingRevision = util.GetRequiredEnvOrFatal("SERVING_REVISION", logger)
 	servingAutoscaler = util.GetRequiredEnvOrFatal("SERVING_AUTOSCALER", logger)
 	servingAutoscalerPort = util.GetRequiredEnvOrFatal("SERVING_AUTOSCALER_PORT", logger)
+	servingRevisionKey = fmt.Sprintf("%s/%s", servingNamespace, servingRevision)
 }
 
 func connectStatSink() {
@@ -140,7 +141,7 @@ func statReporter() {
 		}
 		sm := autoscaler.StatMessage{
 			Stat:        *s,
-			RevisionKey: servingRevision,
+			RevisionKey: servingRevisionKey,
 		}
 		var b bytes.Buffer
 		enc := gob.NewEncoder(&b)
@@ -271,10 +272,10 @@ func main() {
 
 	initEnv()
 	logger = logger.With(
-		zap.String(logkey.Namespace, servingNamespace),
+		zap.String(commonlogkey.Namespace, servingNamespace),
 		zap.String(logkey.Configuration, servingConfiguration),
 		zap.String(logkey.Revision, servingRevision),
-		zap.String(logkey.Pod, podName))
+		zap.String(commonlogkey.Pod, podName))
 
 	target, err := url.Parse("http://localhost:8080")
 	if err != nil {
