@@ -39,6 +39,13 @@ type ResourceNames struct {
 	TrafficTarget string
 }
 
+// ResourceObjects holds types of the resource objects.
+type ResourceObjects struct {
+	Route         *v1alpha1.Route
+	Configuration *v1alpha1.Configuration
+	Service       *v1alpha1.Service
+}
+
 // Route returns a Route object in namespace using the route and configuration
 // names in names.
 func Route(namespace string, names ResourceNames) *v1alpha1.Route {
@@ -82,7 +89,7 @@ func BlueGreenRoute(namespace string, names, blue, green ResourceNames) *v1alpha
 }
 
 // Configuration returns a Configuration object in namespace with the name names.Config
-// that uses the image specifed by imagePath.
+// that uses the image specified by imagePath.
 func Configuration(namespace string, names ResourceNames, imagePath string) *v1alpha1.Configuration {
 	return &v1alpha1.Configuration{
 		ObjectMeta: metav1.ObjectMeta{
@@ -121,7 +128,7 @@ func ConfigurationWithBuild(namespace string, names ResourceNames, build *buildv
 }
 
 // LatestService returns a RunLatest Service object in namespace with the name names.Service
-// that uses the image specifed by imagePath.
+// that uses the image specified by imagePath.
 func LatestService(namespace string, names ResourceNames, imagePath string) *v1alpha1.Service {
 	return &v1alpha1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -151,7 +158,10 @@ const (
 
 // r is used by AppendRandomString to generate a random string. It is seeded with the time
 // at import so the strings will be different between test runs.
-var r *rand.Rand
+var (
+	r        *rand.Rand
+	rndMutex *sync.Mutex
+)
 
 // once is used to initialize r
 var once sync.Once
@@ -161,6 +171,7 @@ func initSeed(logger *zap.SugaredLogger) func() {
 		seed := time.Now().UTC().UnixNano()
 		logger.Infof("Seeding rand.Rand with %v", seed)
 		r = rand.New(rand.NewSource(seed))
+		rndMutex = &sync.Mutex{}
 	}
 }
 
@@ -171,8 +182,10 @@ func initSeed(logger *zap.SugaredLogger) func() {
 func AppendRandomString(prefix string, logger *zap.SugaredLogger) string {
 	once.Do(initSeed(logger))
 	suffix := make([]byte, randSuffixLen)
+	rndMutex.Lock()
 	for i := range suffix {
 		suffix[i] = letterBytes[r.Intn(len(letterBytes))]
 	}
+	rndMutex.Unlock()
 	return prefix + string(suffix)
 }
